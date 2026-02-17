@@ -37,6 +37,7 @@ export async function POST(request: NextRequest) {
 
     const pageInventory: WebPage[] = (existingPages as WebPage[]) || [];
     const today = new Date().toISOString().split('T')[0];
+    const stepErrors: string[] = [];
 
     // Date ranges for comparison
     const endDate = today;
@@ -49,7 +50,9 @@ export async function POST(request: NextRequest) {
     try {
       searchData = await getPageSearchDataWithComparison(startDate, endDate, prevStartDate, prevEndDate);
     } catch (err) {
-      console.error('Search Console pull failed:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('Search Console pull failed:', msg);
+      stepErrors.push(`Search Console: ${msg}`);
     }
 
     // Store Search Console snapshots
@@ -76,7 +79,9 @@ export async function POST(request: NextRequest) {
     try {
       ga4Data = await getPageMetrics(startDate, endDate, prevStartDate, prevEndDate);
     } catch (err) {
-      console.error('GA4 pull failed:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('GA4 pull failed:', msg);
+      stepErrors.push(`GA4: ${msg}`);
     }
 
     // Store GA4 snapshots
@@ -183,7 +188,9 @@ export async function POST(request: NextRequest) {
         }
       }
     } catch (err) {
-      console.error('HubSpot CMS sync failed:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('HubSpot CMS sync failed:', msg);
+      stepErrors.push(`HubSpot: ${msg}`);
     }
 
     // Reload pages after sync
@@ -241,7 +248,9 @@ export async function POST(request: NextRequest) {
         }
       }
     } catch (err) {
-      console.error('Link check failed:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('Link check failed:', msg);
+      stepErrors.push(`Links: ${msg}`);
     }
 
     // ── Step 7: Meta/title audit ──
@@ -259,7 +268,9 @@ export async function POST(request: NextRequest) {
         }
       }
     } catch (err) {
-      console.error('Meta audit failed:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('Meta audit failed:', msg);
+      stepErrors.push(`Meta: ${msg}`);
     }
 
     // ── Step 8: Layer 1 — Compute health scores ──
@@ -364,6 +375,7 @@ export async function POST(request: NextRequest) {
       brokenLinksFound,
       metaIssuesFound,
       durationMs: elapsed,
+      ...(stepErrors.length > 0 && { stepErrors }),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
