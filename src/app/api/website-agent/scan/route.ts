@@ -55,24 +55,22 @@ export async function POST(request: NextRequest) {
       stepErrors.push(`Search Console: ${msg}`);
     }
 
-    // Store Search Console snapshots (upsert to avoid duplicates on re-run)
-    const scSnapshots: SearchConsoleSnapshot[] = [];
-    for (const sc of searchData) {
-      const snapshot: Partial<SearchConsoleSnapshot> = {
-        page_url: sc.pageUrl,
-        snapshot_date: today,
-        total_clicks: sc.clicks,
-        total_impressions: sc.impressions,
-        avg_ctr: sc.ctr,
-        avg_position: sc.position,
-        clicks_previous_period: sc.previousClicks,
-        impressions_previous_period: sc.previousImpressions,
-        position_change: sc.positionChange,
-      };
+    // Store Search Console snapshots (batch upsert to avoid duplicates)
+    const scSnapshots: SearchConsoleSnapshot[] = searchData.map(sc => ({
+      page_url: sc.pageUrl,
+      snapshot_date: today,
+      total_clicks: sc.clicks,
+      total_impressions: sc.impressions,
+      avg_ctr: sc.ctr,
+      avg_position: sc.position,
+      clicks_previous_period: sc.previousClicks,
+      impressions_previous_period: sc.previousImpressions,
+      position_change: sc.positionChange,
+    }) as SearchConsoleSnapshot);
 
+    for (let i = 0; i < scSnapshots.length; i += 100) {
       await supabase.from('website_agent_search_console_snapshots')
-        .upsert(snapshot, { onConflict: 'page_url,snapshot_date' });
-      scSnapshots.push(snapshot as SearchConsoleSnapshot);
+        .upsert(scSnapshots.slice(i, i + 100), { onConflict: 'page_url,snapshot_date' });
     }
 
     // ── Step 3: Pull GA4 data (batch) ──
@@ -85,14 +83,12 @@ export async function POST(request: NextRequest) {
       stepErrors.push(`GA4: ${msg}`);
     }
 
-    // Store GA4 snapshots
-    const ga4Snapshots: GA4Snapshot[] = [];
-    for (const ga4 of ga4Data) {
+    // Store GA4 snapshots (batch upsert)
+    const ga4Snapshots: GA4Snapshot[] = ga4Data.map(ga4 => {
       const changePct = ga4.previousUsers > 0
         ? ((ga4.activeUsers - ga4.previousUsers) / ga4.previousUsers) * 100
         : 0;
-
-      const snapshot: Partial<GA4Snapshot> = {
+      return {
         page_url: ga4.pagePath,
         snapshot_date: today,
         active_users: ga4.activeUsers,
@@ -103,11 +99,12 @@ export async function POST(request: NextRequest) {
         users_previous_period: ga4.previousUsers,
         sessions_previous_period: ga4.previousSessions,
         traffic_change_pct: changePct,
-      };
+      } as GA4Snapshot;
+    });
 
+    for (let i = 0; i < ga4Snapshots.length; i += 100) {
       await supabase.from('website_agent_ga4_snapshots')
-        .upsert(snapshot, { onConflict: 'page_url,snapshot_date' });
-      ga4Snapshots.push(snapshot as GA4Snapshot);
+        .upsert(ga4Snapshots.slice(i, i + 100), { onConflict: 'page_url,snapshot_date' });
     }
 
     // ── Step 4: PageSpeed spot checks (3-5 worst/untested pages) ──
@@ -259,15 +256,19 @@ export async function POST(request: NextRequest) {
     let metaIssuesFound = 0;
     try {
       const auditResults = runMetaAudit(allPages);
-      for (const audit of auditResults) {
-        if (audit.issues.length > 0) {
-          metaIssuesFound++;
-          await supabase.from('website_agent_pages').update({
+      const metaUpdates = auditResults.filter(a => a.issues.length > 0);
+      metaIssuesFound = metaUpdates.length;
+
+      // Batch update meta issues (chunks of 50 concurrent)
+      for (let i = 0; i < metaUpdates.length; i += 50) {
+        const batch = metaUpdates.slice(i, i + 50);
+        await Promise.all(batch.map(audit =>
+          supabase.from('website_agent_pages').update({
             meta_issues: audit.issues,
             title_length: audit.titleLength,
             meta_description_length: audit.metaDescriptionLength,
-          }).eq('url', audit.url);
-        }
+          }).eq('url', audit.url)
+        ));
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -283,6 +284,24 @@ export async function POST(request: NextRequest) {
     const ga4ByPath = new Map(ga4Snapshots.map(s => [s.page_url, s]));
     // SC uses full URLs — normalize by stripping trailing slashes for matching
     const scByUrl = new Map(scSnapshots.map(s => [s.page_url.replace(/\/+$/, ''), s]));
+    // Load all existing speed data upfront (1 query instead of 719)
+    const speedByUrl = new Map(speedScores.map(s => [s.page_url, s]));
+    const { data: existingSpeedData } = await supabase
+      .from('website_agent_page_speed_scores')
+      .select('*')
+      .eq('strategy', 'mobile')
+      .order('test_date', { ascending: false });
+    if (existingSpeedData) {
+      for (const s of existingSpeedData) {
+        if (!speedByUrl.has(s.page_url)) {
+          speedByUrl.set(s.page_url, s as PageSpeedScore);
+        }
+      }
+    }
+
+    // Compute all health scores in memory
+    const healthUpdates: Array<{ id: string; health_score: number; health_score_breakdown: object }> = [];
+    const now = new Date().toISOString();
 
     for (const page of allPages) {
       // Extract path from full URL for GA4 matching
@@ -294,30 +313,10 @@ export async function POST(request: NextRequest) {
       }
       const ga4 = ga4ByPath.get(pagePath) || null;
       const sc = scByUrl.get(page.url.replace(/\/+$/, '')) || null;
-      const speed = speedScores.find(s => s.page_url === page.url) || null;
-
-      // Also check for existing speed data if not tested this run
-      let speedToUse = speed;
-      if (!speedToUse) {
-        const { data: existingSpeed } = await supabase
-          .from('website_agent_page_speed_scores')
-          .select('*')
-          .eq('page_url', page.url)
-          .eq('strategy', 'mobile')
-          .order('test_date', { ascending: false })
-          .limit(1)
-          .single();
-        if (existingSpeed) speedToUse = existingSpeed as PageSpeedScore;
-      }
+      const speedToUse = speedByUrl.get(page.url) || null;
 
       const breakdown = computeHealthScore(page, ga4, sc, speedToUse);
-
-      // Update page with health score
-      await supabase.from('website_agent_pages').update({
-        health_score: breakdown.total,
-        health_score_breakdown: breakdown,
-        last_health_check_at: new Date().toISOString(),
-      }).eq('id', page.id);
+      healthUpdates.push({ id: page.id, health_score: breakdown.total, health_score_breakdown: breakdown });
 
       // Flag pages below threshold
       if (breakdown.total < 50) {
@@ -339,6 +338,18 @@ export async function POST(request: NextRequest) {
           flagReasons,
         });
       }
+    }
+
+    // Batch update health scores (chunks of 50 concurrent updates)
+    for (let i = 0; i < healthUpdates.length; i += 50) {
+      const batch = healthUpdates.slice(i, i + 50);
+      await Promise.all(batch.map(u =>
+        supabase.from('website_agent_pages').update({
+          health_score: u.health_score,
+          health_score_breakdown: u.health_score_breakdown,
+          last_health_check_at: now,
+        }).eq('id', u.id)
+      ));
     }
 
     // ── Step 9: Rank flagged pages, pick top 3 ──
