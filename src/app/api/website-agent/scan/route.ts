@@ -55,7 +55,7 @@ export async function POST(request: NextRequest) {
       stepErrors.push(`Search Console: ${msg}`);
     }
 
-    // Store Search Console snapshots
+    // Store Search Console snapshots (upsert to avoid duplicates on re-run)
     const scSnapshots: SearchConsoleSnapshot[] = [];
     for (const sc of searchData) {
       const snapshot: Partial<SearchConsoleSnapshot> = {
@@ -70,7 +70,8 @@ export async function POST(request: NextRequest) {
         position_change: sc.positionChange,
       };
 
-      await supabase.from('website_agent_search_console_snapshots').insert(snapshot);
+      await supabase.from('website_agent_search_console_snapshots')
+        .upsert(snapshot, { onConflict: 'page_url,snapshot_date' });
       scSnapshots.push(snapshot as SearchConsoleSnapshot);
     }
 
@@ -104,7 +105,8 @@ export async function POST(request: NextRequest) {
         traffic_change_pct: changePct,
       };
 
-      await supabase.from('website_agent_ga4_snapshots').insert(snapshot);
+      await supabase.from('website_agent_ga4_snapshots')
+        .upsert(snapshot, { onConflict: 'page_url,snapshot_date' });
       ga4Snapshots.push(snapshot as GA4Snapshot);
     }
 
@@ -276,9 +278,22 @@ export async function POST(request: NextRequest) {
     // ── Step 8: Layer 1 — Compute health scores ──
     const flaggedPages: FlaggedPage[] = [];
 
+    // Build lookup maps for efficient matching
+    // GA4 uses relative paths (/blog/foo), pages use full URLs (https://www.inecta.com/blog/foo)
+    const ga4ByPath = new Map(ga4Snapshots.map(s => [s.page_url, s]));
+    // SC uses full URLs — normalize by stripping trailing slashes for matching
+    const scByUrl = new Map(scSnapshots.map(s => [s.page_url.replace(/\/+$/, ''), s]));
+
     for (const page of allPages) {
-      const ga4 = ga4Snapshots.find(s => page.url.includes(s.page_url)) || null;
-      const sc = scSnapshots.find(s => s.page_url === page.url) || null;
+      // Extract path from full URL for GA4 matching
+      let pagePath: string;
+      try {
+        pagePath = new URL(page.url).pathname;
+      } catch {
+        pagePath = page.url;
+      }
+      const ga4 = ga4ByPath.get(pagePath) || null;
+      const sc = scByUrl.get(page.url.replace(/\/+$/, '')) || null;
       const speed = speedScores.find(s => s.page_url === page.url) || null;
 
       // Also check for existing speed data if not tested this run

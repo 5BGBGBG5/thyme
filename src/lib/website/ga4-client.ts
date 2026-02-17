@@ -53,8 +53,8 @@ export async function runGA4Report(request: GA4ReportRequest): Promise<GA4Report
 }
 
 /**
- * Get page-level metrics for a date range.
- * Returns: per page — active users, sessions, page views, bounce rate, session duration, traffic sources.
+ * Get page-level metrics for current and previous date ranges.
+ * Makes two separate API calls and merges results (same pattern as Search Console).
  */
 export async function getPageMetrics(
   startDate: string,
@@ -71,7 +71,7 @@ export async function getPageMetrics(
   previousUsers: number;
   previousSessions: number;
 }>> {
-  const response = await runGA4Report({
+  const reportRequest = (start: string, end: string) => ({
     dimensions: [{ name: 'pagePath' }],
     metrics: [
       { name: 'activeUsers' },
@@ -80,16 +80,29 @@ export async function getPageMetrics(
       { name: 'bounceRate' },
       { name: 'averageSessionDuration' },
     ],
-    dateRanges: [
-      { startDate, endDate, name: 'current' },
-      { startDate: previousStartDate, endDate: previousEndDate, name: 'previous' },
-    ],
+    dateRanges: [{ startDate: start, endDate: end }],
     limit: 500,
     orderBys: [{ metric: { metricName: 'activeUsers' }, desc: true }],
   });
 
-  const rows = response.rows || [];
-  const pageMap = new Map<string, {
+  const [currentResponse, previousResponse] = await Promise.all([
+    runGA4Report(reportRequest(startDate, endDate)),
+    runGA4Report(reportRequest(previousStartDate, previousEndDate)),
+  ]);
+
+  // Build previous-period lookup
+  const prevMap = new Map<string, { users: number; sessions: number }>();
+  for (const row of previousResponse.rows || []) {
+    const pagePath = row.dimensionValues?.[0]?.value || '';
+    const metrics = row.metricValues || [];
+    prevMap.set(pagePath, {
+      users: parseInt(metrics[0]?.value || '0'),
+      sessions: parseInt(metrics[1]?.value || '0'),
+    });
+  }
+
+  // Build current-period results with previous-period data merged
+  const results: Array<{
     pagePath: string;
     activeUsers: number;
     sessions: number;
@@ -98,29 +111,26 @@ export async function getPageMetrics(
     avgSessionDuration: number;
     previousUsers: number;
     previousSessions: number;
-  }>();
+  }> = [];
 
-  for (const row of rows) {
+  for (const row of currentResponse.rows || []) {
     const pagePath = row.dimensionValues?.[0]?.value || '';
     const metrics = row.metricValues || [];
+    const prev = prevMap.get(pagePath);
 
-    // GA4 returns rows for each date range — first set is current, second set is comparison
-    // When using 2 date ranges, metrics are doubled (current metrics first, then previous)
-    if (!pageMap.has(pagePath)) {
-      pageMap.set(pagePath, {
-        pagePath,
-        activeUsers: parseInt(metrics[0]?.value || '0'),
-        sessions: parseInt(metrics[1]?.value || '0'),
-        pageViews: parseInt(metrics[2]?.value || '0'),
-        bounceRate: parseFloat(metrics[3]?.value || '0'),
-        avgSessionDuration: parseFloat(metrics[4]?.value || '0'),
-        previousUsers: parseInt(metrics[5]?.value || '0'),
-        previousSessions: parseInt(metrics[6]?.value || '0'),
-      });
-    }
+    results.push({
+      pagePath,
+      activeUsers: parseInt(metrics[0]?.value || '0'),
+      sessions: parseInt(metrics[1]?.value || '0'),
+      pageViews: parseInt(metrics[2]?.value || '0'),
+      bounceRate: parseFloat(metrics[3]?.value || '0'),
+      avgSessionDuration: parseFloat(metrics[4]?.value || '0'),
+      previousUsers: prev?.users || 0,
+      previousSessions: prev?.sessions || 0,
+    });
   }
 
-  return Array.from(pageMap.values());
+  return results;
 }
 
 /**
