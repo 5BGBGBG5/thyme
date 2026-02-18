@@ -3,7 +3,7 @@ import { emitSignal } from '../signals';
 import { runAgentLoop } from './agent-loop';
 import type { FlaggedPage, Finding, AgentLoopResult } from './types';
 
-const MAX_FINDINGS_PER_RUN = 3;
+const MAX_FINDINGS_PER_RUN = 1;
 
 /**
  * Run Layer 2 analysis on flagged pages.
