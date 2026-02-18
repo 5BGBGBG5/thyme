@@ -115,7 +115,8 @@ export async function POST(request: NextRequest) {
     const { data: allPagesData } = await supabase
       .from('website_agent_pages')
       .select('*')
-      .eq('is_active', true);
+      .eq('is_active', true)
+      .range(0, 1999);
 
     const allPages = (allPagesData as WebPage[]) || [];
     let metaIssuesCount = 0;

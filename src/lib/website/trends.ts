@@ -23,7 +23,8 @@ export async function computeTrends(): Promise<TrendData> {
   const { data: pages } = await supabase
     .from('website_agent_pages')
     .select('url, health_score, has_broken_links, broken_link_count, meta_issues')
-    .eq('is_active', true);
+    .eq('is_active', true)
+    .range(0, 1999);
 
   const allPages = pages || [];
 

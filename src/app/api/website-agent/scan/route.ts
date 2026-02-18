@@ -33,7 +33,8 @@ export async function POST(request: NextRequest) {
     const { data: existingPages } = await supabase
       .from('website_agent_pages')
       .select('*')
-      .eq('is_active', true);
+      .eq('is_active', true)
+      .range(0, 1999);
 
     const pageInventory: WebPage[] = (existingPages as WebPage[]) || [];
     const today = new Date().toISOString().split('T')[0];
@@ -199,7 +200,8 @@ export async function POST(request: NextRequest) {
     const { data: refreshedPages } = await supabase
       .from('website_agent_pages')
       .select('*')
-      .eq('is_active', true);
+      .eq('is_active', true)
+      .range(0, 1999);
 
     const allPages = (refreshedPages as WebPage[]) || pageInventory;
 
