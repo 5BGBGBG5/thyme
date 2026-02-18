@@ -415,14 +415,18 @@ export async function POST(request: NextRequest) {
     // ── Step 9: Rank flagged pages, pick top 3 ──
     flaggedPages.sort((a, b) => (a.page.health_score || 0) - (b.page.health_score || 0));
 
-    // ── Step 10: Layer 2 — Agent loop for top 3 ──
+    // ── Step 10: Layer 2 — Agent loop (if time budget allows) ──
+    const TIME_BUDGET_MS = 80_000; // Reserve 40s for agent loop + cleanup
     let layer2Result: { processed: number; findings: Finding[]; skipped: number } = { processed: 0, findings: [], skipped: 0 };
-    if (flaggedPages.length > 0) {
+    const elapsedSoFar = Date.now() - startTime;
+    if (flaggedPages.length > 0 && elapsedSoFar < TIME_BUDGET_MS) {
       try {
         layer2Result = await runLayer2Analysis(flaggedPages);
       } catch (err) {
         console.error('Layer 2 analysis failed:', err);
       }
+    } else if (elapsedSoFar >= TIME_BUDGET_MS) {
+      console.log(`Skipping agent loop — ${Math.round(elapsedSoFar / 1000)}s elapsed, over ${TIME_BUDGET_MS / 1000}s budget`);
     }
 
     // ── Step 11: Write summary + emit signals ──
