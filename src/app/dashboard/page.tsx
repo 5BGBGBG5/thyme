@@ -31,6 +31,10 @@ interface OverviewData {
   topIssues: Array<{
     id: string; finding_type: string; severity: string; title: string;
     page_url: string; health_score: number; status: string; created_at: string;
+    description: string; business_impact: string;
+  }>;
+  topDecisions: Array<{
+    id: string; finding_id: string; action_summary: string; status: string;
   }>;
 }
 
@@ -185,7 +189,13 @@ function ExpandableText({ text, maxLength = 150 }: { text: string; maxLength?: n
 // Tab Content Components
 // ============================================================================
 
-function OverviewTab({ data }: { data: OverviewData | null }) {
+function OverviewTab({ data, setActiveTab, onDecide }: {
+  data: OverviewData | null;
+  setActiveTab: (tab: TabId) => void;
+  onDecide: (id: string, action: 'approve' | 'reject') => void;
+}) {
+  const [expandedIssueId, setExpandedIssueId] = useState<string | null>(null);
+
   if (!data) return <LoadingState />;
 
   return (
@@ -213,17 +223,102 @@ function OverviewTab({ data }: { data: OverviewData | null }) {
 
       {data.topIssues.length > 0 && (
         <div className="glass-card p-5">
-          <h3 className="text-lg font-semibold mb-4">Top Issues</h3>
-          <div className="space-y-3">
-            {data.topIssues.map(issue => (
-              <div key={issue.id} className="flex items-center justify-between p-3 rounded-lg bg-background-hover/50">
-                <div className="flex items-center gap-3">
-                  <SeverityBadge severity={issue.severity} />
-                  <span className="text-sm">{issue.title}</span>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold">Top Issues</h3>
+            <button
+              onClick={() => setActiveTab('findings')}
+              className="text-xs text-accent-primary hover:underline"
+            >
+              View all findings
+            </button>
+          </div>
+          <div className="space-y-2">
+            {data.topIssues.map(issue => {
+              const isExpanded = expandedIssueId === issue.id;
+              const decision = (data.topDecisions || []).find(d => d.finding_id === issue.id);
+
+              return (
+                <div key={issue.id} className="rounded-lg bg-background-hover/50 overflow-hidden">
+                  <button
+                    onClick={() => setExpandedIssueId(isExpanded ? null : issue.id)}
+                    className="flex items-center justify-between w-full p-3 text-left hover:bg-background-hover/80 transition-colors"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <SeverityBadge severity={issue.severity} />
+                      <span className="text-sm truncate">{issue.title}</span>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <HealthBar score={issue.health_score} />
+                      {isExpanded
+                        ? <ChevronUp size={14} className="text-text-secondary" />
+                        : <ChevronDown size={14} className="text-text-secondary" />}
+                    </div>
+                  </button>
+
+                  <AnimatePresence>
+                    {isExpanded && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="px-3 pb-3 space-y-2 border-t border-border-secondary pt-3">
+                          <span className="text-xs text-text-secondary px-2 py-0.5 rounded bg-background-primary/60">
+                            {issue.finding_type.replace(/_/g, ' ')}
+                          </span>
+
+                          {issue.description && (
+                            <p className="text-sm text-text-secondary">
+                              <ExpandableText text={issue.description} maxLength={200} />
+                            </p>
+                          )}
+
+                          {issue.business_impact && (
+                            <p className="text-sm text-amber-400">
+                              Impact: {issue.business_impact}
+                            </p>
+                          )}
+
+                          {issue.page_url && (
+                            <a href={issue.page_url} target="_blank" rel="noopener noreferrer"
+                              className="text-xs text-accent-primary flex items-center gap-1 hover:underline">
+                              {issue.page_url} <ExternalLink size={12} />
+                            </a>
+                          )}
+
+                          {decision && (
+                            <div className="flex items-center gap-3 pt-2 border-t border-border-secondary">
+                              <span className="text-sm text-text-secondary flex-1">
+                                {decision.action_summary}
+                              </span>
+                              <div className="flex gap-2 shrink-0">
+                                <button onClick={(e) => { e.stopPropagation(); onDecide(decision.id, 'approve'); }}
+                                  className="btn-primary px-3 py-1.5 text-sm flex items-center gap-1">
+                                  <Check size={14} /> Approve
+                                </button>
+                                <button onClick={(e) => { e.stopPropagation(); onDecide(decision.id, 'reject'); }}
+                                  className="btn-secondary px-3 py-1.5 text-sm flex items-center gap-1">
+                                  <X size={14} /> Reject
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          <button
+                            onClick={() => setActiveTab('findings')}
+                            className="text-xs text-accent-primary hover:underline pt-1"
+                          >
+                            View full details &rarr;
+                          </button>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
-                <HealthBar score={issue.health_score} />
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -766,7 +861,7 @@ export default function Dashboard() {
           exit={{ opacity: 0, y: -10 }}
           transition={{ duration: 0.2 }}
         >
-          {activeTab === 'overview' && <OverviewTab data={overview} />}
+          {activeTab === 'overview' && <OverviewTab data={overview} setActiveTab={setActiveTab} onDecide={handleDecide} />}
           {activeTab === 'pages' && <PagesTab pages={pages} loading={loading} />}
           {activeTab === 'findings' && (
             <FindingsTab findings={findings} decisions={decisions} loading={loading} onDecide={handleDecide} />

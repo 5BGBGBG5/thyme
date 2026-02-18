@@ -40,13 +40,25 @@ export async function GET() {
       .order('created_at', { ascending: false })
       .limit(10);
 
-    // Top issues (recent findings sorted by severity)
+    // Top issues (recent findings with description + impact for actionable cards)
     const { data: topIssues } = await supabase
       .from('website_agent_findings')
-      .select('id, finding_type, severity, title, page_url, health_score, status, created_at')
+      .select('id, finding_type, severity, title, page_url, health_score, status, created_at, description, business_impact')
       .in('status', ['new', 'recommendation_drafted'])
       .order('created_at', { ascending: false })
       .limit(5);
+
+    // Fetch pending decisions for top issues (for inline approve/reject)
+    const topIssueIds = (topIssues || []).map(i => i.id);
+    let topDecisions: Array<{ id: string; finding_id: string; action_summary: string; status: string }> = [];
+    if (topIssueIds.length > 0) {
+      const { data: decisions } = await supabase
+        .from('website_agent_decision_queue')
+        .select('id, finding_id, action_summary, status')
+        .in('finding_id', topIssueIds)
+        .eq('status', 'pending');
+      topDecisions = decisions || [];
+    }
 
     // Latest conversion audit
     const { data: conversionAudit } = await supabase
@@ -67,6 +79,7 @@ export async function GET() {
       conversionHealth: conversionAudit?.tracking_health || 'unknown',
       recentActivity: recentActivity || [],
       topIssues: topIssues || [],
+      topDecisions,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';

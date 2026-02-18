@@ -200,6 +200,66 @@ export async function POST(request: NextRequest) {
 
     const allPages = (refreshedPages as WebPage[]) || pageInventory;
 
+    // ── Step 5b: HTML form detection for landing pages ──
+    // HubSpot widget parsing misses forms embedded via JS/custom modules/HubL templates.
+    // Fetch live HTML for landing pages where has_form=false and check for <form> tags.
+    try {
+      const landingPagesNoForm = allPages.filter(
+        p => p.page_type === 'landing_page' && !p.has_form
+      );
+
+      if (landingPagesNoForm.length > 0) {
+        const formDetectionResults: Array<{ id: string; has_form: boolean }> = [];
+
+        for (let i = 0; i < landingPagesNoForm.length; i += 20) {
+          const batch = landingPagesNoForm.slice(i, i + 20);
+          const results = await Promise.allSettled(
+            batch.map(async (page) => {
+              const res = await fetch(page.url, {
+                signal: AbortSignal.timeout(5000),
+                headers: { 'User-Agent': 'ThymeBot/1.0 (health-check)' },
+                redirect: 'follow',
+              });
+              if (!res.ok) return { id: page.id, has_form: false };
+              const html = await res.text();
+              const hasForm = /<form[\s>]/i.test(html);
+              return { id: page.id, has_form: hasForm };
+            })
+          );
+
+          for (const result of results) {
+            if (result.status === 'fulfilled') {
+              formDetectionResults.push(result.value);
+            }
+          }
+        }
+
+        // Update pages where form was detected via HTML
+        const pagesWithForms = formDetectionResults.filter(r => r.has_form);
+        if (pagesWithForms.length > 0) {
+          await Promise.all(
+            pagesWithForms.map(p =>
+              supabase.from('website_agent_pages')
+                .update({ has_form: true })
+                .eq('id', p.id)
+            )
+          );
+          // Update in-memory allPages array so health scores are correct
+          const formPageIds = new Set(pagesWithForms.map(p => p.id));
+          for (const page of allPages) {
+            if (formPageIds.has(page.id)) {
+              page.has_form = true;
+            }
+          }
+          console.log(`Form detection: found forms on ${pagesWithForms.length}/${landingPagesNoForm.length} landing pages via HTML`);
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('HTML form detection failed:', msg);
+      stepErrors.push(`FormDetection: ${msg}`);
+    }
+
     // ── Step 6: Broken link check (rotating subset) ──
     let brokenLinksFound = 0;
     try {
