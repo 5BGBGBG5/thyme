@@ -7,7 +7,7 @@ import { getAccessToken } from '@/lib/website/google-auth';
 import { getPageMetrics } from '@/lib/website/ga4-client';
 import { getPageSearchDataWithComparison } from '@/lib/website/search-console-client';
 import { runConversionAudit } from '@/lib/website/conversion-audit';
-import { fetchSitemap, checkUrl } from '@/lib/website/link-checker';
+import { fetchSitemap, runLinkCheck } from '@/lib/website/link-checker';
 import { runMetaAudit } from '@/lib/website/meta-auditor';
 import { checkKeywordCoverage } from '@/lib/website/keyword-coverage';
 import { generateTrendSnapshot, emitTrendSignals } from '@/lib/website/trends';
@@ -58,56 +58,60 @@ export async function POST(request: NextRequest) {
       console.error('Conversion audit failed:', err);
     }
 
-    // ── Step 4: Full sitemap crawl for broken links ──
+    // ── Step 4: Sitemap broken link check (batched, time-budgeted) ──
     let brokenLinksCount = 0;
+    const LINK_CHECK_BUDGET_MS = 40_000;
     try {
       const sitemapUrls = await fetchSitemap('https://www.inecta.com');
+      // Cap at 200 URLs to stay within time budget
+      const urlsToCheck = sitemapUrls.slice(0, 200);
+      console.log(`Link check: ${urlsToCheck.length} of ${sitemapUrls.length} URLs`);
 
-      for (const url of sitemapUrls) {
-        const result = await checkUrl(url);
+      if (Date.now() - startTime < LINK_CHECK_BUDGET_MS) {
+        const results = await runLinkCheck(urlsToCheck);
+        const now = new Date().toISOString();
 
-        if (result.isBroken) {
-          brokenLinksCount++;
+        // Batch DB operations for broken links
+        const brokenResults = results.filter(r => r.isBroken);
+        brokenLinksCount = brokenResults.length;
 
-          const { data: existing } = await supabase
-            .from('website_agent_link_health')
-            .select('id')
-            .eq('target_url', url)
-            .limit(1)
-            .single();
-
-          if (existing) {
-            await supabase.from('website_agent_link_health').update({
-              http_status: result.status,
-              is_broken: true,
-              error_message: result.errorMessage,
-              last_checked_at: new Date().toISOString(),
-            }).eq('id', existing.id);
-          } else {
-            await supabase.from('website_agent_link_health').insert({
-              source_page_url: url,
-              target_url: url,
-              link_type: 'internal',
-              http_status: result.status,
-              is_broken: true,
-              error_message: result.errorMessage,
-            });
+        // Batch upsert broken links
+        if (brokenResults.length > 0) {
+          const rows = brokenResults.map(r => ({
+            source_page_url: r.url,
+            target_url: r.url,
+            link_type: 'internal',
+            http_status: r.status,
+            is_broken: true,
+            error_message: r.errorMessage,
+            last_checked_at: now,
+          }));
+          for (let i = 0; i < rows.length; i += 50) {
+            await supabase.from('website_agent_link_health').upsert(
+              rows.slice(i, i + 50),
+              { onConflict: 'target_url' }
+            );
           }
-        } else {
-          // Mark previously broken links as resolved
+        }
+
+        // Batch resolve previously broken links that are now OK
+        const okUrls = results.filter(r => !r.isBroken).map(r => r.url);
+        if (okUrls.length > 0) {
           await supabase.from('website_agent_link_health').update({
             is_broken: false,
             is_resolved: true,
-            resolved_at: new Date().toISOString(),
-            last_checked_at: new Date().toISOString(),
-          }).eq('target_url', url).eq('is_broken', true);
+            resolved_at: now,
+            last_checked_at: now,
+          }).in('target_url', okUrls).eq('is_broken', true);
         }
+      } else {
+        console.log('Link check skipped — time budget exceeded');
       }
     } catch (err) {
-      console.error('Full link crawl failed:', err);
+      console.error('Link check failed:', err);
     }
 
-    // ── Step 5: Full meta/title audit ──
+    // ── Step 5: Full meta/title audit (batched DB updates) ──
     const { data: allPagesData } = await supabase
       .from('website_agent_pages')
       .select('*')
@@ -118,25 +122,42 @@ export async function POST(request: NextRequest) {
 
     try {
       const auditResults = runMetaAudit(allPages);
-      for (const audit of auditResults) {
-        await supabase.from('website_agent_pages').update({
+      metaIssuesCount = auditResults.filter(a => a.issues.length > 0).length;
+
+      // Build a URL-keyed map for the pages so we can get IDs
+      const pageByUrl = new Map(allPages.map(p => [p.url, p]));
+
+      // Batch updates: 50 concurrent
+      const updates = auditResults.map(audit => ({
+        url: audit.url,
+        id: pageByUrl.get(audit.url)?.id,
+        data: {
           meta_issues: audit.issues.length > 0 ? audit.issues : null,
           title_length: audit.titleLength,
           meta_description_length: audit.metaDescriptionLength,
-        }).eq('url', audit.url);
+        },
+      })).filter(u => u.id);
 
-        if (audit.issues.length > 0) metaIssuesCount++;
+      for (let i = 0; i < updates.length; i += 50) {
+        const batch = updates.slice(i, i + 50);
+        await Promise.all(
+          batch.map(u => supabase.from('website_agent_pages').update(u.data).eq('id', u.id))
+        );
       }
     } catch (err) {
       console.error('Full meta audit failed:', err);
     }
 
-    // ── Step 6: Keyword-to-page coverage ──
+    // ── Step 6: Keyword-to-page coverage (skip if tight on time) ──
     let keywordGaps: KeywordCoverageGap[] = [];
-    try {
-      keywordGaps = await checkKeywordCoverage();
-    } catch (err) {
-      console.error('Keyword coverage check failed:', err);
+    if (Date.now() - startTime < 70_000) {
+      try {
+        keywordGaps = await checkKeywordCoverage();
+      } catch (err) {
+        console.error('Keyword coverage check failed:', err);
+      }
+    } else {
+      console.log('Keyword coverage skipped — time budget');
     }
 
     // ── Step 7: Content freshness sweep ──
@@ -171,32 +192,37 @@ export async function POST(request: NextRequest) {
       .limit(10);
 
     let summaryNarrative = '';
-    try {
-      const digestPrompt = buildDigestPrompt({
-        pagesScanned: allPages.length,
-        avgHealthScore: trends?.avgHealthScore || 0,
-        findings: recentFindings || [],
-        decisions: recentDecisions || [],
-        conversionAudit,
-        brokenLinksCount,
-        metaIssuesCount,
-        stalePages: stalePages.length,
-        keywordGaps,
-        searchDataCount: searchData.length,
-        ga4DataCount: ga4Data.length,
-        trends,
-      });
+    if (Date.now() - startTime < 95_000) {
+      try {
+        const digestPrompt = buildDigestPrompt({
+          pagesScanned: allPages.length,
+          avgHealthScore: trends?.avgHealthScore || 0,
+          findings: recentFindings || [],
+          decisions: recentDecisions || [],
+          conversionAudit,
+          brokenLinksCount,
+          metaIssuesCount,
+          stalePages: stalePages.length,
+          keywordGaps,
+          searchDataCount: searchData.length,
+          ga4DataCount: ga4Data.length,
+          trends,
+        });
 
-      const response = await anthropic.messages.create({
-        model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 1500,
-        messages: [{ role: 'user', content: digestPrompt }],
-      });
+        const response = await anthropic.messages.create({
+          model: 'claude-sonnet-4-5-20250929',
+          max_tokens: 1500,
+          messages: [{ role: 'user', content: digestPrompt }],
+        });
 
-      const textBlock = response.content.find(b => b.type === 'text');
-      summaryNarrative = textBlock ? (textBlock as { type: 'text'; text: string }).text : '';
-    } catch (err) {
-      console.error('Digest narrative generation failed:', err);
+        const textBlock = response.content.find(b => b.type === 'text');
+        summaryNarrative = textBlock ? (textBlock as { type: 'text'; text: string }).text : '';
+      } catch (err) {
+        console.error('Digest narrative generation failed:', err);
+        summaryNarrative = `Weekly scan completed. ${allPages.length} pages monitored, ${brokenLinksCount} broken links, ${metaIssuesCount} meta issues.`;
+      }
+    } else {
+      console.log('Claude narrative skipped — time budget');
       summaryNarrative = `Weekly scan completed. ${allPages.length} pages monitored, ${brokenLinksCount} broken links, ${metaIssuesCount} meta issues.`;
     }
 
