@@ -107,11 +107,13 @@ export async function POST(request: NextRequest) {
         .upsert(ga4Snapshots.slice(i, i + 100), { onConflict: 'page_url,snapshot_date' });
     }
 
-    // ── Step 4: PageSpeed spot checks (3-5 worst/untested pages) ──
+    // ── Step 4: PageSpeed spot checks (2 worst/untested pages) ──
+    // Each PSI test takes 15-25s. Budget: max 2 tests (~40s) to leave room for other steps.
     const speedScores: PageSpeedScore[] = [];
-    const pagesToTest = selectPagesForSpeedTest(pageInventory, 5);
+    const pagesToTest = selectPagesForSpeedTest(pageInventory, 2);
 
     for (const page of pagesToTest) {
+      if (Date.now() - startTime > 50_000) break; // Stop if >50s elapsed
       try {
         const result = await getPageSpeedScore(page.url, 'mobile');
         const speedSnapshot: Partial<PageSpeedScore> = {
@@ -136,56 +138,57 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // ── Step 5: HubSpot CMS sync ──
+    // ── Step 5: HubSpot CMS sync (batched) ──
     let syncedPages = 0;
     try {
       const hubspotPages = await getAllPages();
-      for (const hp of hubspotPages) {
-        const existing = pageInventory.find(p => p.url === hp.url);
+      const existingByUrl = new Map(pageInventory.map(p => [p.url, p]));
+      const updates: Array<{ id: string; data: Record<string, unknown> }> = [];
+      const inserts: Array<Record<string, unknown>> = [];
 
+      for (const hp of hubspotPages) {
+        const existing = existingByUrl.get(hp.url);
         const contentAgeDays = hp.updated_at
           ? Math.floor((Date.now() - new Date(hp.updated_at).getTime()) / (1000 * 60 * 60 * 24))
           : null;
 
+        const pageData = {
+          title: hp.title,
+          meta_description: hp.meta_description,
+          slug: hp.slug,
+          page_type: hp.page_type,
+          hubspot_page_id: hp.id,
+          has_form: hp.form_ids.length > 0,
+          form_ids: hp.form_ids.length > 0 ? hp.form_ids : null,
+          has_cta: hp.cta_ids.length > 0,
+          cta_ids: hp.cta_ids.length > 0 ? hp.cta_ids : null,
+          published_at: hp.published_at,
+          last_updated_at: hp.updated_at,
+          content_age_days: contentAgeDays,
+          title_length: hp.title ? hp.title.length : null,
+          meta_description_length: hp.meta_description ? hp.meta_description.length : null,
+        };
+
         if (existing) {
-          await supabase.from('website_agent_pages').update({
-            title: hp.title,
-            meta_description: hp.meta_description,
-            slug: hp.slug,
-            page_type: hp.page_type,
-            hubspot_page_id: hp.id,
-            has_form: hp.form_ids.length > 0,
-            form_ids: hp.form_ids.length > 0 ? hp.form_ids : null,
-            has_cta: hp.cta_ids.length > 0,
-            cta_ids: hp.cta_ids.length > 0 ? hp.cta_ids : null,
-            published_at: hp.published_at,
-            last_updated_at: hp.updated_at,
-            content_age_days: contentAgeDays,
-            title_length: hp.title ? hp.title.length : null,
-            meta_description_length: hp.meta_description ? hp.meta_description.length : null,
-            updated_at: new Date().toISOString(),
-          }).eq('id', existing.id);
+          updates.push({ id: existing.id, data: { ...pageData, updated_at: new Date().toISOString() } });
         } else {
-          await supabase.from('website_agent_pages').insert({
-            url: hp.url,
-            slug: hp.slug,
-            title: hp.title,
-            meta_description: hp.meta_description,
-            page_type: hp.page_type,
-            hubspot_page_id: hp.id,
-            has_form: hp.form_ids.length > 0,
-            form_ids: hp.form_ids.length > 0 ? hp.form_ids : null,
-            has_cta: hp.cta_ids.length > 0,
-            cta_ids: hp.cta_ids.length > 0 ? hp.cta_ids : null,
-            published_at: hp.published_at,
-            last_updated_at: hp.updated_at,
-            content_age_days: contentAgeDays,
-            title_length: hp.title ? hp.title.length : null,
-            meta_description_length: hp.meta_description ? hp.meta_description.length : null,
-          });
-          syncedPages++;
+          inserts.push({ url: hp.url, ...pageData });
         }
       }
+
+      // Batch updates (50 concurrent)
+      for (let i = 0; i < updates.length; i += 50) {
+        const batch = updates.slice(i, i + 50);
+        await Promise.all(batch.map(u =>
+          supabase.from('website_agent_pages').update(u.data).eq('id', u.id)
+        ));
+      }
+
+      // Batch inserts (100 at a time)
+      for (let i = 0; i < inserts.length; i += 100) {
+        await supabase.from('website_agent_pages').insert(inserts.slice(i, i + 100));
+      }
+      syncedPages = inserts.length;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('HubSpot CMS sync failed:', msg);
