@@ -203,7 +203,7 @@ export type FindingType =
 
 export type FindingSeverity = 'critical' | 'high' | 'medium' | 'low';
 
-export type FindingStatus = 'new' | 'recommendation_drafted' | 'approved' | 'completed' | 'expired' | 'skipped';
+export type FindingStatus = 'new' | 'recommendation_drafted' | 'approved' | 'completed' | 'expired' | 'skipped' | 'resolved';
 
 export interface Finding {
   id: string;
@@ -221,6 +221,13 @@ export interface Finding {
   status: FindingStatus;
   skip_reason: string | null;
   expires_at: string | null;
+  // Auto-resolution tracking
+  check_type: string | null;
+  check_target: string | null;
+  health_score_at_detection: number | null;
+  health_score_at_resolution: number | null;
+  resolved_at: string | null;
+  resolution_method: 'auto' | 'manual' | null;
   created_at: string;
 }
 

@@ -180,9 +180,16 @@ CREATE TABLE IF NOT EXISTS website_agent_findings (
   agent_loop_tools_used TEXT[],
   agent_investigation_summary TEXT,
   -- Status
-  status TEXT DEFAULT 'new' CHECK (status IN ('new', 'recommendation_drafted', 'approved', 'completed', 'expired', 'skipped')),
+  status TEXT DEFAULT 'new' CHECK (status IN ('new', 'recommendation_drafted', 'approved', 'completed', 'expired', 'skipped', 'resolved')),
   skip_reason TEXT,
   expires_at TIMESTAMPTZ,
+  -- Auto-resolution tracking
+  check_type TEXT,         -- e.g. 'meta_missing', 'broken_link', 'content_stale', 'speed_low'
+  check_target TEXT,       -- the page URL or specific resource to re-check
+  health_score_at_detection INT,
+  health_score_at_resolution INT,
+  resolved_at TIMESTAMPTZ,
+  resolution_method TEXT CHECK (resolution_method IN ('auto', 'manual')),
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 

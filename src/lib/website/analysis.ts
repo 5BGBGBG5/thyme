@@ -103,12 +103,16 @@ async function createFinding(
   flaggedPage: FlaggedPage,
   result: AgentLoopResult
 ): Promise<Finding | null> {
+  // Map finding_type to a verifiable check_type for auto-resolution
+  const findingType = result.finding_type || 'traffic_decline';
+  const checkType = getCheckType(findingType);
+
   const { data, error } = await supabase
     .from('website_agent_findings')
     .insert({
       page_url: flaggedPage.page.url,
       page_id: flaggedPage.page.id,
-      finding_type: result.finding_type || 'traffic_decline',
+      finding_type: findingType,
       severity: result.severity || 'medium',
       health_score: flaggedPage.page.health_score,
       title: result.title || `Issue found: ${flaggedPage.page.url}`,
@@ -119,6 +123,10 @@ async function createFinding(
       agent_investigation_summary: result.investigation_summary,
       status: 'recommendation_drafted',
       expires_at: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(), // 48h expiry
+      // Auto-resolution tracking
+      check_type: checkType,
+      check_target: flaggedPage.page.url,
+      health_score_at_detection: flaggedPage.page.health_score,
     })
     .select()
     .single();
@@ -170,6 +178,23 @@ async function createRecommendation(
     related_entity_type: 'finding',
     related_entity_id: finding.id,
   });
+}
+
+/**
+ * Map finding_type to an auto-verifiable check_type.
+ * Returns null for findings that can't be automatically verified.
+ */
+function getCheckType(findingType: string): string | null {
+  const checkTypeMap: Record<string, string> = {
+    meta_issue: 'meta_fixed',
+    broken_link: 'link_resolved',
+    content_stale: 'content_updated',
+    speed_degradation: 'speed_improved',
+    traffic_decline: 'traffic_recovered',
+    ranking_loss: 'ranking_recovered',
+    conversion_broken: 'conversion_fixed',
+  };
+  return checkTypeMap[findingType] || null;
 }
 
 async function emitFindingSignals(

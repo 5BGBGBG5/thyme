@@ -5,8 +5,9 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   TrendingUp, FileText, AlertTriangle, Search, Zap, Target,
   RefreshCw, ChevronDown, ChevronUp, ExternalLink, Check, X,
-  Activity, Link2, Type,
+  Activity, Link2, Type, ScrollText,
 } from 'lucide-react';
+import Link from 'next/link';
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid,
@@ -51,6 +52,9 @@ interface FindingData {
   page_url: string; health_score: number; status: string; business_impact: string;
   agent_investigation_summary: string; agent_loop_iterations: number;
   agent_loop_tools_used: string[]; created_at: string;
+  check_type: string | null; health_score_at_detection: number | null;
+  health_score_at_resolution: number | null; resolved_at: string | null;
+  resolution_method: string | null;
 }
 
 interface DecisionData {
@@ -136,6 +140,7 @@ function StatusBadge({ status }: { status: string }) {
     recommendation_drafted: 'bg-purple-500/20 text-purple-400',
     completed: 'bg-green-500/20 text-green-400',
     skipped: 'bg-gray-500/20 text-gray-400',
+    resolved: 'bg-emerald-500/20 text-emerald-400',
   };
   return (
     <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${colors[status] || 'bg-gray-500/20 text-gray-400'}`}>
@@ -476,6 +481,37 @@ function FindingsTab({ findings, decisions, loading, onDecide }: {
                   Agent Investigation ({finding.agent_loop_iterations} iterations, tools: {finding.agent_loop_tools_used?.join(', ') || 'none'})
                 </div>
                 <ExpandableText text={finding.agent_investigation_summary} maxLength={300} />
+              </div>
+            )}
+
+            {finding.status === 'resolved' && (
+              <div className="mt-3 p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-sm">
+                <div className="flex items-center gap-2 mb-1">
+                  <Check size={14} className="text-emerald-400" />
+                  <span className="font-medium text-emerald-400">
+                    {finding.resolution_method === 'auto' ? 'Auto-resolved' : 'Manually resolved'}
+                  </span>
+                  {finding.resolved_at && (
+                    <span className="text-xs text-text-secondary">
+                      {new Date(finding.resolved_at).toLocaleDateString()}
+                    </span>
+                  )}
+                </div>
+                {finding.health_score_at_detection != null && finding.health_score_at_resolution != null && (
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="text-text-secondary">Health score:</span>
+                    <span className="font-mono text-red-400">{finding.health_score_at_detection}</span>
+                    <span className="text-text-secondary">&rarr;</span>
+                    <span className="font-mono text-emerald-400">{finding.health_score_at_resolution}</span>
+                    <span className={`font-mono text-xs ${
+                      finding.health_score_at_resolution > finding.health_score_at_detection
+                        ? 'text-emerald-400' : 'text-text-secondary'
+                    }`}>
+                      ({finding.health_score_at_resolution > finding.health_score_at_detection ? '+' : ''}
+                      {finding.health_score_at_resolution - finding.health_score_at_detection})
+                    </span>
+                  </div>
+                )}
               </div>
             )}
 
@@ -824,11 +860,18 @@ export default function Dashboard() {
           <h1 className="text-3xl font-bold text-glow">Thyme</h1>
           <p className="text-text-secondary mt-1">Website Health & Performance Agent</p>
         </div>
-        <button onClick={fetchData} className="btn-secondary flex items-center gap-2 text-sm"
-          disabled={loading}>
-          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-3">
+          <Link href="/changelog"
+            className="text-text-secondary hover:text-accent-primary text-sm flex items-center gap-1.5 transition-colors">
+            <ScrollText size={16} />
+            Changelog
+          </Link>
+          <button onClick={fetchData} className="btn-secondary flex items-center gap-2 text-sm"
+            disabled={loading}>
+            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Tab Navigation */}

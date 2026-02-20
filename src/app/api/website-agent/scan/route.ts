@@ -417,6 +417,47 @@ export async function POST(request: NextRequest) {
       ));
     }
 
+    // ── Step 8b: Auto-resolve open findings whose conditions have cleared ──
+    let autoResolved = 0;
+    try {
+      const { data: openFindings } = await supabase
+        .from('website_agent_findings')
+        .select('id, check_type, check_target, page_url, finding_type, health_score_at_detection')
+        .in('status', ['new', 'recommendation_drafted', 'approved'])
+        .not('check_type', 'is', null);
+
+      if (openFindings && openFindings.length > 0) {
+        const pageByUrl = new Map(allPages.map(p => [p.url, p]));
+
+        for (const finding of openFindings) {
+          const page = pageByUrl.get(finding.check_target || finding.page_url || '');
+          if (!page) continue;
+
+          const isResolved = checkFindingResolved(finding.check_type, finding.finding_type, page);
+          if (isResolved) {
+            await supabase.from('website_agent_findings').update({
+              status: 'resolved',
+              resolved_at: new Date().toISOString(),
+              resolution_method: 'auto',
+              health_score_at_resolution: page.health_score,
+            }).eq('id', finding.id);
+
+            // Also resolve the linked decision queue item
+            await supabase.from('website_agent_decision_queue').update({
+              status: 'approved',
+              reviewed_by: 'thyme-auto-resolve',
+              reviewed_at: new Date().toISOString(),
+              review_notes: `Auto-resolved: condition cleared (health ${finding.health_score_at_detection} → ${page.health_score})`,
+            }).eq('finding_id', finding.id).eq('status', 'pending');
+
+            autoResolved++;
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Auto-resolution check failed:', err);
+    }
+
     // ── Step 9: Rank flagged pages, pick top 3 ──
     flaggedPages.sort((a, b) => (a.page.health_score || 0) - (b.page.health_score || 0));
 
@@ -445,6 +486,7 @@ export async function POST(request: NextRequest) {
         pages_flagged: flaggedPages.length,
         findings_created: layer2Result.findings.length,
         skipped: layer2Result.skipped,
+        auto_resolved: autoResolved,
         broken_links_found: brokenLinksFound,
         meta_issues_found: metaIssuesFound,
         pages_synced: syncedPages,
@@ -467,6 +509,7 @@ export async function POST(request: NextRequest) {
       pagesScanned: allPages.length,
       pagesFlagged: flaggedPages.length,
       findingsCreated: layer2Result.findings.length,
+      autoResolved,
       brokenLinksFound,
       metaIssuesFound,
       durationMs: elapsed,
@@ -514,6 +557,52 @@ function selectPagesForSpeedTest(pages: WebPage[], count: number): WebPage[] {
   }
 
   return result;
+}
+
+/**
+ * Check if a finding's underlying condition has been resolved.
+ * Uses the current page data to determine if the issue still exists.
+ */
+function checkFindingResolved(
+  checkType: string,
+  findingType: string,
+  page: WebPage
+): boolean {
+  switch (checkType) {
+    case 'meta_fixed':
+      // Meta issue resolved if the page no longer has meta_issues
+      return !page.meta_issues || page.meta_issues.length === 0;
+
+    case 'link_resolved':
+      // Broken link resolved if page no longer flagged
+      return !page.has_broken_links;
+
+    case 'content_updated':
+      // Content freshness resolved if updated within last 180 days
+      return page.content_age_days !== null && page.content_age_days < 180;
+
+    case 'speed_improved':
+      // Speed resolved if health score speed dimension improved above threshold
+      if (page.health_score_breakdown) {
+        return (page.health_score_breakdown.page_speed || 0) >= 10; // At least 10/20
+      }
+      return false;
+
+    case 'traffic_recovered':
+      // Traffic recovered if health score is now above 50
+      return (page.health_score || 0) >= 50;
+
+    case 'ranking_recovered':
+      // Ranking recovered if health score is now above 50
+      return (page.health_score || 0) >= 50;
+
+    case 'conversion_fixed':
+      // Conversion fixed if page now has a form
+      return page.has_form;
+
+    default:
+      return false;
+  }
 }
 
 function selectUrlsForLinkCheck(

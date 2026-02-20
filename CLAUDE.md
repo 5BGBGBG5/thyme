@@ -146,6 +146,7 @@ CRON_SECRET=                        # Vercel cron auth token
 
 ## Conventions
 
+- **Changelog required**: After completing any feature add, improvement, or bug fix, always add an entry to `src/lib/changelog-data.ts`. Prepend a new object to the `CHANGELOG_ENTRIES` array with today's date, the appropriate type (`'feature'`, `'fix'`, or `'improvement'`), a short title, and a 1-2 sentence description. The changelog page at `/changelog` renders from this array.
 - This agent is part of the SALT Crew network. See salt-crew-core/ARCHITECTURE.md for shared SALT Crew conventions.
 - Thyme reads/writes to the same AiEO Supabase project as Saffron and Cayenne — no separate database.
 - All tables prefixed `website_agent_*`.
