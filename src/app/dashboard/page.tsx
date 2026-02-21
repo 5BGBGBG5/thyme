@@ -5,9 +5,9 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   TrendingUp, FileText, AlertTriangle, Search, Zap, Target,
   RefreshCw, ChevronDown, ChevronUp, ExternalLink, Check, X,
-  Activity, Link2, Type, ScrollText,
+  Activity, Link2, Type, ArrowUpRight,
 } from 'lucide-react';
-import Link from 'next/link';
+
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid,
@@ -855,54 +855,65 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen p-6 max-w-7xl mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-3xl font-bold text-glow">Thyme</h1>
-          <p className="text-text-secondary mt-1">Website Health & Performance Agent</p>
+          <h1 className="text-2xl font-bold text-[var(--text-primary)]">Thyme</h1>
+          <p className="text-sm text-[var(--text-secondary)]">
+            Website Health & Performance Agent —{' '}
+            <a href="https://www.inecta-salt.com/" target="_blank" rel="noopener noreferrer"
+              className="inline-flex items-center gap-0.5 text-[var(--accent-primary)] hover:underline">
+              SALT Crew
+              <ArrowUpRight className="w-3 h-3" />
+            </a>
+          </p>
         </div>
         <div className="flex items-center gap-3">
-          <Link href="/changelog"
-            className="text-text-secondary hover:text-accent-primary text-sm flex items-center gap-1.5 transition-colors">
-            <ScrollText size={16} />
+          <a href="/changelog"
+            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg text-[var(--text-secondary)] border border-[var(--border-primary)] hover:text-[var(--text-primary)] hover:border-[var(--accent-primary)]/30 transition-colors">
+            <FileText className="w-4 h-4" />
             Changelog
-          </Link>
-          <button onClick={fetchData} className="btn-secondary flex items-center gap-2 text-sm"
+          </a>
+          <button onClick={fetchData}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg text-[var(--text-secondary)] border border-[var(--border-primary)] hover:text-[var(--text-primary)] hover:border-[var(--accent-primary)]/30 transition-colors disabled:opacity-50"
             disabled={loading}>
-            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </button>
         </div>
       </div>
 
       {/* Tab Navigation */}
-      <div className="flex gap-1 mb-6 overflow-x-auto pb-2">
-        {TABS.map(tab => {
-          const Icon = tab.icon;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all ${
-                activeTab === tab.id
-                  ? 'bg-accent-primary/20 text-accent-primary border border-accent-primary/30'
-                  : 'text-text-secondary hover:text-text-primary hover:bg-background-hover'
-              }`}
-            >
-              <Icon size={16} />
-              {tab.label}
-            </button>
-          );
-        })}
+      <div className="border-b border-[var(--border-primary)] mb-6">
+        <nav className="-mb-px flex space-x-1 overflow-x-auto">
+          {TABS.map(tab => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-1.5 whitespace-nowrap py-3 px-4 border-b-2 text-sm font-medium transition-all ${
+                  isActive
+                    ? 'border-[var(--accent-primary)] text-[var(--accent-primary)]'
+                    : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:border-[var(--border-primary)]'
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                {tab.label}
+              </button>
+            );
+          })}
+        </nav>
       </div>
 
       {/* Tab Content */}
       <AnimatePresence mode="wait">
         <motion.div
           key={activeTab}
-          initial={{ opacity: 0, y: 10 }}
+          initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -10 }}
-          transition={{ duration: 0.2 }}
+          exit={{ opacity: 0, y: -8 }}
+          transition={{ duration: 0.15 }}
         >
           {activeTab === 'overview' && <OverviewTab data={overview} setActiveTab={setActiveTab} onDecide={handleDecide} />}
           {activeTab === 'pages' && <PagesTab pages={pages} loading={loading} />}
